@@ -221,15 +221,17 @@ class RememberConversation
             return Str::limit($prompt, 50, preserveWords: true);
         }
 
-        $invocationId = (string) Str::uuid7();
-
         $message = Str::limit($prompt, 500);
+
+        $fallback = Str::limit($prompt, 100, preserveWords: true);
 
         try {
             $model = $this->provider->cheapestTextModel();
         } catch (Throwable) {
-            return Str::limit($prompt, 100, preserveWords: true);
+            return $fallback;
         }
+
+        $invocationId = (string) Str::uuid7();
 
         event(new GeneratingConversationTitle(
             $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
@@ -250,7 +252,7 @@ class RememberConversation
                 $exception, $this->elapsedMilliseconds($startedAt),
             ));
 
-            return Str::limit($prompt, 100, preserveWords: true);
+            return $fallback;
         }
 
         event(new ConversationTitleGenerated(
