@@ -43,6 +43,7 @@ use Tests\Fixtures\Agents\OrchestratorAgent;
 use Tests\Fixtures\Agents\RateLimitedToolAgent;
 use Tests\Fixtures\Agents\RememberingAssistantAgent;
 use Tests\Fixtures\Agents\RememberingThrowingApprovableAgent;
+use Tests\Fixtures\Agents\RememberingToolUsingAgent;
 use Tests\Fixtures\Agents\ResearchAgent;
 use Tests\Fixtures\Agents\ToolUsingAgent;
 use Tests\Fixtures\FakeConversationStore;
@@ -312,6 +313,32 @@ test('a failed conversation title call dispatches a failure event and falls back
         ->and($failed->model)->toBe('openai/gpt-oss-20b')
         ->and($failed->exception)->toBeInstanceOf(RequestException::class)
         ->and($failed->time)->toBeGreaterThan(0);
+});
+
+test('a turn that fails after a step reports its title call against the failed run', function (): void {
+    app()->instance(ConversationStore::class, new FakeConversationStore);
+
+    config(['ai.providers.groq' => ['driver' => 'groq', 'key' => 'test-key']]);
+
+    Event::fake();
+
+    Http::preventStrayRequests();
+
+    Http::fakeSequence()
+        ->pushResponse(fakeGroqToolCallResponse())
+        ->push(status: 500)
+        ->pushResponse(fakeGroqResponse('Number Report'));
+
+    expect(fn () => (new RememberingToolUsingAgent)->forUser((object) ['id' => 1])->prompt('Generate a number', provider: 'groq'))
+        ->toThrow(RequestException::class);
+
+    $failedRun = Event::dispatched(AgentFailed::class)->first()[0];
+
+    Event::assertDispatchedTimes(GeneratingConversationTitle::class, 1);
+
+    Event::assertDispatched(ConversationTitleGenerated::class, fn (ConversationTitleGenerated $event): bool => $event->parentInvocationId === $failedRun->invocationId
+        && $event->invocationId !== $failedRun->invocationId
+        && $event->response->text === 'Number Report');
 });
 
 test('disabled conversation title generation makes no title call and dispatches no title events', function (): void {
