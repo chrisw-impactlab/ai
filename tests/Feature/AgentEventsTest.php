@@ -314,6 +314,29 @@ test('a failed conversation title call dispatches a failure event and falls back
         ->and($failed->time)->toBeGreaterThan(0);
 });
 
+test('disabled conversation title generation makes no title call and dispatches no title events', function (): void {
+    app()->instance(ConversationStore::class, new FakeConversationStore);
+
+    config([
+        'ai.providers.groq' => ['driver' => 'groq', 'key' => 'test-key'],
+        'ai.conversations.generate_title' => false,
+    ]);
+
+    Event::fake();
+
+    Http::preventStrayRequests();
+
+    Http::fakeSequence()->pushResponse(fakeGroqResponse('Hello there.'));
+
+    (new RememberingAssistantAgent)->forUser((object) ['id' => 1])->prompt('Hello', provider: 'groq');
+
+    Http::assertSentCount(1);
+
+    Event::assertNotDispatched(GeneratingConversationTitle::class);
+    Event::assertNotDispatched(ConversationTitleGenerated::class);
+    Event::assertNotDispatched(ConversationTitleFailed::class);
+});
+
 test('step events are dispatched on the streaming path', function (): void {
     Event::fake();
 
