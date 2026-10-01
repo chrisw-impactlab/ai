@@ -9,6 +9,9 @@ use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Contracts\RemembersConversations;
+use Laravel\Ai\Events\ConversationTitleGenerated;
+use Laravel\Ai\Events\GeneratingConversationTitle;
+use Laravel\Ai\Gateway\Concerns\MeasuresDuration;
 use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Models\Conversation;
 use Laravel\Ai\Prompts\AgentPrompt;
@@ -18,6 +21,8 @@ use Throwable;
 
 class RememberConversation
 {
+    use MeasuresDuration;
+
     /**
      * Create a new middleware instance.
      */
@@ -79,7 +84,7 @@ class RememberConversation
 
             $participant = $agent->conversationParticipant();
 
-            $userMessageId = $this->openTurn($agent, $prompt, $pendingConversationId);
+            $userMessageId = $this->openTurn($agent, $prompt, $pendingConversationId, $completedResponse->invocationId);
 
             [$participantType, $participantId] = $this->participantKeys($participant);
 
@@ -127,7 +132,7 @@ class RememberConversation
             return;
         }
 
-        $this->openTurn($agent, $prompt, $pendingConversationId);
+        $this->openTurn($agent, $prompt, $pendingConversationId, $context->invocationId);
 
         [$participantType, $participantId] = $this->participantKeys($agent->conversationParticipant());
 
@@ -146,7 +151,7 @@ class RememberConversation
      *
      * @param  Agent&RemembersConversations  $agent
      */
-    protected function openTurn(Agent $agent, AgentPrompt $prompt, ?string $pendingConversationId): ?string
+    protected function openTurn(Agent $agent, AgentPrompt $prompt, ?string $pendingConversationId, ?string $parentInvocationId = null): ?string
     {
         $participant = $agent->conversationParticipant();
 
@@ -156,7 +161,7 @@ class RememberConversation
             $agent->continue($this->store->storeConversation(
                 $participantType,
                 $participantId,
-                $this->generateTitle($prompt->prompt),
+                $this->generateTitle($prompt->prompt, $parentInvocationId, $pendingConversationId),
                 $pendingConversationId,
             ), $participant);
         }
@@ -209,23 +214,40 @@ class RememberConversation
     /**
      * Generate a title for the conversation.
      */
-    protected function generateTitle(string $prompt): string
+    protected function generateTitle(string $prompt, ?string $parentInvocationId = null, ?string $conversationId = null): string
     {
         if (! (bool) config('ai.conversations.generate_title', true)) {
             return Str::limit($prompt, 50, preserveWords: true);
         }
 
+        $invocationId = (string) Str::uuid7();
+
+        $message = Str::limit($prompt, 500);
+
         try {
+            $model = $this->provider->cheapestTextModel();
+
+            event(new GeneratingConversationTitle(
+                $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
+            ));
+
+            $startedAt = hrtime(true);
+
             $response = $this->provider->textGenerationLoop()->generate(
                 $this->provider,
-                $this->provider->cheapestTextModel(),
+                $model,
                 'Generate a concise 3-5 word title for a conversation that starts with the following message. Use the same language as the message. Respond with only the title, no quotes or punctuation.',
-                [new UserMessage(Str::limit($prompt, 500))],
+                [new UserMessage($message)],
             );
-
-            return Str::limit($response->text, 100);
         } catch (Throwable) {
             return Str::limit($prompt, 100, preserveWords: true);
         }
+
+        event(new ConversationTitleGenerated(
+            $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
+            $response, $this->elapsedMilliseconds($startedAt),
+        ));
+
+        return Str::limit($response->text, 100);
     }
 }
