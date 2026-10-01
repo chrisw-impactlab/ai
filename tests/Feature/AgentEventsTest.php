@@ -10,6 +10,8 @@ use Laravel\Ai\Events\AgentFailed;
 use Laravel\Ai\Events\AgentFailedOver;
 use Laravel\Ai\Events\AgentPrompted;
 use Laravel\Ai\Events\AgentStreamed;
+use Laravel\Ai\Events\ConversationTitleGenerated;
+use Laravel\Ai\Events\GeneratingConversationTitle;
 use Laravel\Ai\Events\InvokingTool;
 use Laravel\Ai\Events\PromptingAgent;
 use Laravel\Ai\Events\StartingStep;
@@ -231,6 +233,41 @@ test('conversation title generation does not report steps against the run that t
 
     Event::assertDispatched(StartingStep::class, fn (StartingStep $event): bool => $event->invocationId === $response->invocationId
         && $event->stepNumber === 0);
+});
+
+test('conversation title generation dispatches its own events', function (): void {
+    app()->instance(ConversationStore::class, new FakeConversationStore);
+
+    config(['ai.providers.groq' => ['driver' => 'groq', 'key' => 'test-key']]);
+
+    Event::fake();
+
+    Http::preventStrayRequests();
+
+    Http::fakeSequence()
+        ->pushResponse(fakeGroqResponse('Hello there.'))
+        ->pushResponse(fakeGroqResponse('Greeting Conversation'));
+
+    $response = (new RememberingAssistantAgent)->forUser((object) ['id' => 1])->prompt('Hello', provider: 'groq');
+
+    Event::assertDispatchedTimes(GeneratingConversationTitle::class, 1);
+    Event::assertDispatchedTimes(ConversationTitleGenerated::class, 1);
+
+    $generating = Event::dispatched(GeneratingConversationTitle::class)->first()[0];
+    $generated = Event::dispatched(ConversationTitleGenerated::class)->first()[0];
+
+    // The title call is reported as its own invocation, linked to the run and conversation that caused it...
+    expect($generating->invocationId)->not->toBe($response->invocationId)
+        ->and($generating->parentInvocationId)->toBe($response->invocationId)
+        ->and($generating->conversationId)->toBe($response->conversationId)
+        ->and($generating->provider->name())->toBe('groq')
+        ->and($generating->model)->toBe('openai/gpt-oss-20b')
+        ->and($generating->prompt)->toBe('Hello');
+
+    expect($generated->invocationId)->toBe($generating->invocationId)
+        ->and($generated->response->text)->toBe('Greeting Conversation')
+        ->and($generated->response->usage->inputTokens)->toBe(1)
+        ->and($generated->time)->toBeGreaterThan(0);
 });
 
 test('step events are dispatched on the streaming path', function (): void {
