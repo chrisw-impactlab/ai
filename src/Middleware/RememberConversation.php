@@ -9,6 +9,7 @@ use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Contracts\RemembersConversations;
+use Laravel\Ai\Events\ConversationTitleFailed;
 use Laravel\Ai\Events\ConversationTitleGenerated;
 use Laravel\Ai\Events\GeneratingConversationTitle;
 use Laravel\Ai\Gateway\Concerns\MeasuresDuration;
@@ -226,20 +227,29 @@ class RememberConversation
 
         try {
             $model = $this->provider->cheapestTextModel();
+        } catch (Throwable) {
+            return Str::limit($prompt, 100, preserveWords: true);
+        }
 
-            event(new GeneratingConversationTitle(
-                $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
-            ));
+        event(new GeneratingConversationTitle(
+            $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
+        ));
 
-            $startedAt = hrtime(true);
+        $startedAt = hrtime(true);
 
+        try {
             $response = $this->provider->textGenerationLoop()->generate(
                 $this->provider,
                 $model,
                 'Generate a concise 3-5 word title for a conversation that starts with the following message. Use the same language as the message. Respond with only the title, no quotes or punctuation.',
                 [new UserMessage($message)],
             );
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
+            event(new ConversationTitleFailed(
+                $invocationId, $parentInvocationId, $conversationId, $this->provider, $model, $message,
+                $exception, $this->elapsedMilliseconds($startedAt),
+            ));
+
             return Str::limit($prompt, 100, preserveWords: true);
         }
 
