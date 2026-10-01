@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Event;
@@ -10,6 +11,7 @@ use Laravel\Ai\Events\AgentFailed;
 use Laravel\Ai\Events\AgentFailedOver;
 use Laravel\Ai\Events\AgentPrompted;
 use Laravel\Ai\Events\AgentStreamed;
+use Laravel\Ai\Events\ConversationTitleFailed;
 use Laravel\Ai\Events\ConversationTitleGenerated;
 use Laravel\Ai\Events\GeneratingConversationTitle;
 use Laravel\Ai\Events\InvokingTool;
@@ -268,6 +270,48 @@ test('conversation title generation dispatches its own events', function (): voi
         ->and($generated->response->text)->toBe('Greeting Conversation')
         ->and($generated->response->usage->inputTokens)->toBe(1)
         ->and($generated->time)->toBeGreaterThan(0);
+});
+
+test('a failed conversation title call dispatches a failure event and falls back to the prompt', function (): void {
+    app()->instance(ConversationStore::class, $store = new class extends FakeConversationStore
+    {
+        public ?string $title = null;
+
+        public function storeConversation(?string $participantType, string|int|null $participantId, string $title, ?string $id = null): string
+        {
+            $this->title = $title;
+
+            return parent::storeConversation($participantType, $participantId, $title, $id);
+        }
+    });
+
+    config(['ai.providers.groq' => ['driver' => 'groq', 'key' => 'test-key']]);
+
+    Event::fake();
+
+    Http::preventStrayRequests();
+
+    Http::fakeSequence()
+        ->pushResponse(fakeGroqResponse('Hello there.'))
+        ->push(status: 500);
+
+    $response = (new RememberingAssistantAgent)->forUser((object) ['id' => 1])->prompt('Hello', provider: 'groq');
+
+    expect($response->text)->toBe('Hello there.')
+        ->and($store->title)->toBe('Hello');
+
+    Event::assertDispatchedTimes(ConversationTitleFailed::class, 1);
+    Event::assertNotDispatched(ConversationTitleGenerated::class);
+    Event::assertNotDispatched(AgentFailed::class);
+
+    $generating = Event::dispatched(GeneratingConversationTitle::class)->first()[0];
+    $failed = Event::dispatched(ConversationTitleFailed::class)->first()[0];
+
+    expect($failed->invocationId)->toBe($generating->invocationId)
+        ->and($failed->parentInvocationId)->toBe($response->invocationId)
+        ->and($failed->model)->toBe('openai/gpt-oss-20b')
+        ->and($failed->exception)->toBeInstanceOf(RequestException::class)
+        ->and($failed->time)->toBeGreaterThan(0);
 });
 
 test('step events are dispatched on the streaming path', function (): void {
