@@ -310,7 +310,10 @@ test('a failed conversation title call dispatches a failure event and falls back
 
     expect($failed->invocationId)->toBe($generating->invocationId)
         ->and($failed->parentInvocationId)->toBe($response->invocationId)
+        ->and($failed->conversationId)->toBe($response->conversationId)
+        ->and($failed->provider->name())->toBe('groq')
         ->and($failed->model)->toBe('openai/gpt-oss-20b')
+        ->and($failed->prompt)->toBe('Hello')
         ->and($failed->exception)->toBeInstanceOf(RequestException::class)
         ->and($failed->time)->toBeGreaterThan(0);
 });
